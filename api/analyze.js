@@ -1,31 +1,37 @@
 export const config = { maxDuration: 30 };
 
-const SOLCLA_PROMPT = `Eres SOLCLA AI. Sos decisiva, operativa y buscas oportunidades reales.
+const SOLCLA_PROMPT = `Eres SOLCLA AI. Sos decisiva, operativa y buscas oportunidades reales de scalping y day trading en XAU/USD.
 
-**REGLAS CLAVE:**
+REGLAS CLAVE:
 - Preferís dar COMPRA o VENTA cuando hay momentum o estructura clara.
-- Solo usás ESPERAR cuando el precio está en rango sin dirección clara.
-- Regla de distancia en scalping: < 10 pts = señal inmediata. 10-18 pts = RETROCESO.
+- Solo usás ESPERAR cuando realmente no hay dirección.
 - Confianza mínima: 58%.
-- Siempre llenás todos los números: entry, entry_max, sl, tp1, tp2, tp3.
+- Siempre completá: entry, entry_max, sl, tp1, tp2, tp3, tp4, tp5.
+- Si el precio ya está dentro de la zona de entrada → da señal DIRECTA (nunca RETROCESO).
+- Regla de distancia: < 10 pts = señal directa. 10-18 pts = podés usar RETROCESO.
+- En sesión ASIA sé más selectiva, pero si hay setup claro igual da la señal.
 
-Responde SOLO con JSON válido.`;
-
-function buildCandleBlock(candles, interval = '5m') {
-  const last30 = candles.slice(-30);
-  const label = interval === '15m' ? 'VELAS 15M' : 'VELAS 5M';
-  const lines = last30.map((c, i) => {
-    const dir = c.close >= c.open ? '▲' : '▼';
-    return ` ${String(i + 1).padStart(2)}: O${Number(c.open).toFixed(2)} H${Number(c.high).toFixed(2)} L${Number(c.low).toFixed(2)} C${Number(c.close).toFixed(2)} ${dir}`;
-  });
-  return `\n${label}:\n${lines.join('\n')}\n`;
-}
+Responde ÚNICAMENTE con JSON válido.`;
 
 function buildModeBlock(mode) {
   if (mode === 'day') {
-    return `\n═══ MODO DAY TRADING (15m) ═══\n`;
+    return `
+═══ MODO DAY TRADING (15m) ═══
+Pensá de forma ESTRUCTURAL.
+- Priorizá la tendencia dominante y los swings importantes.
+- Buscá zonas de soporte/resistencia claras y recorrido potencial más amplio.
+- Evitá señales solo por momentum de las últimas 5-8 velas.
+- Preferí setups con mejor R:R.
+- Sé más paciente que en scalping.
+`;
   }
-  return `\n═══ MODO SCALPING (5m) ═══\nBuscá oportunidades reales con momentum.\n`;
+  return `
+═══ MODO SCALPING (5m) ═══
+Pensá de forma TÁCTICA y rápida.
+- Buscá momentum claro y entradas precisas.
+- Si hay impulso y estructura a favor, da la señal.
+- Sé operativa, no te quedes en ESPERAR sin motivo fuerte.
+`;
 }
 
 export default async function handler(req, res) {
@@ -34,16 +40,17 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { candles, livePrice, session, hora, mktCtx, memoryStats, mode, interval } = req.body || {};
-    if (!candles?.length || !livePrice) return res.status(400).json({ error: 'Faltan datos' });
+    const { livePrice, session, hora, mktCtx, memoryCtx, mode } = req.body || {};
+
+    if (!livePrice) return res.status(400).json({ error: 'Faltan datos' });
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'API Key no configurada' });
 
     const fullPrompt = SOLCLA_PROMPT + buildModeBlock(mode || 'scalping') +
-      `\nPrecio actual: ${livePrice} | Sesión: ${session}\n` +
-      buildCandleBlock(candles, interval || '5m') +
-      (mktCtx ? `\n${mktCtx}` : '');
+      `\nPrecio actual: ${livePrice} | Sesión: ${session || 'N/A'} | Hora: ${hora || 'N/A'}\n` +
+      (mktCtx ? `\n${mktCtx}` : '') +
+      (memoryCtx ? `\n${memoryCtx}` : '');
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -54,8 +61,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        temperature: 0.35,
+        max_tokens: 1200,
+        temperature: 0.33,
         messages: [{ role: 'user', content: fullPrompt }]
       })
     });
@@ -65,28 +72,15 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(responseText);
     } catch {
-      console.error("ANTHROPIC ERROR:", responseText.slice(0, 200));
-      return res.status(502).json({ error: 'Error de Anthropic, reintentá' });
+      console.error("ANTHROPIC ERROR:", responseText.slice(0, 250));
+      return res.status(502).json({ error: 'Error de Anthropic' });
     }
 
     if (!r.ok) return res.status(502).json({ error: data.error?.message || 'Error API' });
 
-    const rawText = data.content?.[0]?.text || '';
-    const start = rawText.indexOf('{');
-    const end = rawText.lastIndexOf('}');
+    // Devolvemos la respuesta cruda de Claude para que el frontend actual siga funcionando sin cambios
+    res.json(data);
 
-    if (start === -1 || end === -1) return res.status(502).json({ error: 'Sin JSON válido' });
-
-    const signal = JSON.parse(rawText.substring(start, end + 1));
-    const { reasoning, ...safeSignal } = signal;
-
-    // Fixes de seguridad
-    safeSignal.confidence = safeSignal.confidence || 62;
-    if (!['COMPRA', 'VENTA', 'COMPRA EN RETROCESO', 'VENTA EN RETROCESO', 'ESPERAR'].includes(safeSignal.signal)) {
-      safeSignal.signal = 'ESPERAR';
-    }
-
-    res.json({ ok: true, signal: safeSignal });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
