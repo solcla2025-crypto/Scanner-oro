@@ -1,44 +1,15 @@
 export const config = { maxDuration: 30 };
 
-const SOLCLA_PROMPT = `Eres SOLCLA AI, especialista en scalping y day trading de XAU/USD. Sos decisiva, operativa y buscas edge real con buena relación riesgo-beneficio.
+const SOLCLA_PROMPT = `Eres SOLCLA AI. Sos decisiva, operativa y buscas oportunidades reales.
 
-REGLAS DE ORO (cumplilas siempre):
-- Preferí dar COMPRA o VENTA cuando haya momentum claro, ruptura de estructura o rechazo fuerte de nivel clave.
-- Si el precio actual ya está DENTRO de la zona ENTRY → ENTRY_MAX, NUNCA des "COMPRA EN RETROCESO" ni "VENTA EN RETROCESO". Da señal DIRECTA (COMPRA o VENTA).
-- Usá "COMPRA EN RETROCESO" o "VENTA EN RETROCESO" solo cuando la dirección es clara pero el precio todavía no llegó a la zona ideal de entrada.
-- Solo usá ESPERAR cuando realmente no haya momentum ni estructura definida.
-- En scalping (5m): distancia ideal < 10$ → señal inmediata. Entre 10-18$ → preferí modo RETROCESO.
-- En day trading (15m): priorizá estructura macro y swings más grandes.
-- Confianza mínima: 62%. Si no llegás a ese nivel, mejor ESPERAR.
-- Siempre completá TODOS los campos numéricos: entry, entry_max, sl, tp1, tp2, tp3, tp4, tp5.
-- El Stop Loss tiene que estar detrás de un nivel lógico de estructura.
-- Buscá mínimo 1:1.8 de R:R en el TP1.
-- Cuando la operación vaya CONTRA la tendencia principal de 15m, igual podés dar la señal si hay ventaja estadística, pero marcá: "contexto_tendencia":"CONTRATENDENCIA".
-- En sesión ASIA sé más prudente, pero si hay setup claro igual podés dar señal.
+**REGLAS CLAVE:**
+- Preferís dar COMPRA o VENTA cuando hay momentum o estructura clara.
+- Solo usás ESPERAR cuando el precio está en rango sin dirección clara.
+- Regla de distancia en scalping: < 10 pts = señal inmediata. 10-18 pts = RETROCESO.
+- Confianza mínima: 58%.
+- Siempre llenás todos los números: entry, entry_max, sl, tp1, tp2, tp3.
 
-FORMATO OBLIGATORIO:
-Respondé ÚNICAMENTE con JSON válido, sin texto antes ni después. El JSON debe tener exactamente esta estructura:
-
-{
-  "signal": "COMPRA" | "VENTA" | "COMPRA EN RETROCESO" | "VENTA EN RETROCESO" | "ESPERAR",
-  "confidence": number,
-  "entry": number,
-  "entry_max": number,
-  "sl": number,
-  "tp1": number,
-  "tp2": number,
-  "tp3": number,
-  "tp4": number,
-  "tp5": number,
-  "rr_ratio": string,
-  "setup_type": string,
-  "tendencia_15m": string,
-  "contexto_tendencia": "CONTRATENDENCIA" | "A FAVOR",
-  "riesgo": "NORMAL" | "ELEVADO",
-  "summary": "explicación corta y clara",
-  "contexto": "contexto de mercado",
-  "evitar": "cuándo invalidar la señal"
-}`;
+Responde SOLO con JSON válido.`;
 
 function buildCandleBlock(candles, interval = '5m') {
   const last30 = candles.slice(-30);
@@ -52,9 +23,9 @@ function buildCandleBlock(candles, interval = '5m') {
 
 function buildModeBlock(mode) {
   if (mode === 'day') {
-    return `\n═══ MODO DAY TRADING (15m) ═══\nPriorizá swings de estructura y recorridos más amplios.\n`;
+    return `\n═══ MODO DAY TRADING (15m) ═══\n`;
   }
-  return `\n═══ MODO SCALPING (5m) ═══\nBuscá momentum inmediato y entradas precisas.\n`;
+  return `\n═══ MODO SCALPING (5m) ═══\nBuscá oportunidades reales con momentum.\n`;
 }
 
 export default async function handler(req, res) {
@@ -69,23 +40,10 @@ export default async function handler(req, res) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'API Key no configurada' });
 
-    // Memory block
-    let memoryBlock = '';
-    if (memoryStats && memoryStats.groups && memoryStats.groups.length > 0) {
-      memoryBlock = `\n\nHISTORIAL RECIENTE DE LA USUARIA (usar como referencia):\n`;
-      memoryStats.groups.slice(0, 6).forEach(g => {
-        memoryBlock += `- ${g.signal} | ${g.session} | ${g.setup} → WR ${g.wr}% (${g.total} ops) | Confianza promedio: ${g.avgConf}\n`;
-      });
-      if (memoryStats.recent) {
-        memoryBlock += `Últimas 5 ops: ${memoryStats.recent.wins} wins / ${memoryStats.recent.losses} losses\n`;
-      }
-    }
-
     const fullPrompt = SOLCLA_PROMPT + buildModeBlock(mode || 'scalping') +
       `\nPrecio actual: ${livePrice} | Sesión: ${session}\n` +
       buildCandleBlock(candles, interval || '5m') +
-      (mktCtx ? `\n${mktCtx}` : '') +
-      memoryBlock;
+      (mktCtx ? `\n${mktCtx}` : '');
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -96,8 +54,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
-        temperature: 0.32,
+        max_tokens: 1000,
+        temperature: 0.35,
         messages: [{ role: 'user', content: fullPrompt }]
       })
     });
@@ -107,37 +65,28 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(responseText);
     } catch {
-      console.error("ANTHROPIC ERROR:", responseText.slice(0, 300));
-      return res.status(502).json({ error: 'Error de Anthropic' });
+      console.error("ANTHROPIC ERROR:", responseText.slice(0, 200));
+      return res.status(502).json({ error: 'Error de Anthropic, reintentá' });
     }
 
     if (!r.ok) return res.status(502).json({ error: data.error?.message || 'Error API' });
 
     const rawText = data.content?.[0]?.text || '';
-    
-    let jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return res.status(502).json({ error: 'Sin JSON válido en respuesta' });
+    const start = rawText.indexOf('{');
+    const end = rawText.lastIndexOf('}');
 
-    let signal;
-    try {
-      signal = JSON.parse(jsonMatch[0]);
-    } catch {
-      return res.status(502).json({ error: 'JSON mal formado' });
+    if (start === -1 || end === -1) return res.status(502).json({ error: 'Sin JSON válido' });
+
+    const signal = JSON.parse(rawText.substring(start, end + 1));
+    const { reasoning, ...safeSignal } = signal;
+
+    // Fixes de seguridad
+    safeSignal.confidence = safeSignal.confidence || 62;
+    if (!['COMPRA', 'VENTA', 'COMPRA EN RETROCESO', 'VENTA EN RETROCESO', 'ESPERAR'].includes(safeSignal.signal)) {
+      safeSignal.signal = 'ESPERAR';
     }
 
-    // Validaciones de seguridad
-    signal.confidence = signal.confidence || 62;
-    if (!['COMPRA', 'VENTA', 'COMPRA EN RETROCESO', 'VENTA EN RETROCESO', 'ESPERAR'].includes(signal.signal)) {
-      signal.signal = 'ESPERAR';
-    }
-
-    if (signal.signal !== 'ESPERAR') {
-      if (!signal.entry || !signal.sl || !signal.tp1) {
-        signal.signal = 'ESPERAR';
-      }
-    }
-
-    res.json({ ok: true, signal, latency: data.latency || null });
+    res.json({ ok: true, signal: safeSignal });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
