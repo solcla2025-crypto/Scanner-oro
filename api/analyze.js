@@ -6,12 +6,25 @@ REGLAS CLAVE:
 - Preferís dar COMPRA o VENTA cuando hay momentum o estructura clara.
 - Solo usás ESPERAR cuando realmente no hay dirección.
 - Confianza mínima: 58%.
-- Siempre completá: entry, entry_max, sl, tp1, tp2, tp3, tp4, tp5.
+- Siempre completá TODOS estos campos: entry, entry_max, sl, tp1, tp2, tp3, tp4, tp5, confidence, signal.
 - Si el precio ya está dentro de la zona de entrada → da señal DIRECTA (nunca RETROCESO).
 - Regla de distancia: < 10 pts = señal directa. 10-18 pts = podés usar RETROCESO.
 - En sesión ASIA sé más selectiva, pero si hay setup claro igual da la señal.
 
-Responde ÚNICAMENTE con JSON válido.`;
+FORMATO OBLIGATORIO (respondé ÚNICAMENTE con este JSON, nada más):
+{
+  "signal": "COMPRA" | "VENTA" | "COMPRA EN RETROCESO" | "VENTA EN RETROCESO" | "ESPERAR",
+  "confidence": number,
+  "entry": number,
+  "entry_max": number,
+  "sl": number,
+  "tp1": number,
+  "tp2": number,
+  "tp3": number,
+  "tp4": number,
+  "tp5": number,
+  "reasoning": "string corto"
+}`;
 
 function buildModeBlock(mode) {
   if (mode === 'day') {
@@ -42,10 +55,14 @@ export default async function handler(req, res) {
   try {
     const { livePrice, session, hora, mktCtx, memoryCtx, mode } = req.body || {};
 
-    if (!livePrice) return res.status(400).json({ error: 'Faltan datos' });
+    if (!livePrice) {
+      return res.status(400).json({ error: 'Faltan datos (livePrice)' });
+    }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'API Key no configurada' });
+    if (!apiKey) {
+      return res.status(500).json({ error: 'API Key no configurada' });
+    }
 
     const fullPrompt = SOLCLA_PROMPT + buildModeBlock(mode || 'scalping') +
       `\nPrecio actual: ${livePrice} | Sesión: ${session || 'N/A'} | Hora: ${hora || 'N/A'}\n` +
@@ -62,27 +79,31 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1200,
-        temperature: 0.33,
+        temperature: 0.32,
         messages: [{ role: 'user', content: fullPrompt }]
       })
     });
 
     const responseText = await r.text();
     let data;
+
     try {
       data = JSON.parse(responseText);
     } catch {
-      console.error("ANTHROPIC ERROR:", responseText.slice(0, 250));
-      return res.status(502).json({ error: 'Error de Anthropic' });
+      console.error("ANTHROPIC PARSE ERROR:", responseText.slice(0, 300));
+      return res.status(502).json({ error: 'Error de Anthropic (respuesta inválida)' });
     }
 
-    if (!r.ok) return res.status(502).json({ error: data.error?.message || 'Error API' });
+    if (!r.ok) {
+      console.error("ANTHROPIC API ERROR:", data);
+      return res.status(502).json({ error: data.error?.message || 'Error API Anthropic' });
+    }
 
-    // Devolvemos la respuesta cruda de Claude para que el frontend actual siga funcionando sin cambios
-    res.json(data);
+    // Devolvemos la respuesta cruda para que el frontend actual siga funcionando
+    return res.json(data);
 
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
+    console.error("HANDLER ERROR:", e);
+    return res.status(500).json({ error: e.message || 'Error interno' });
   }
 }
